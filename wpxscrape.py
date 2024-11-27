@@ -1,10 +1,13 @@
 import aiohttp
 import asyncio
 import os
+import re
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Column, String, UniqueConstraint
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import (
+    Column, String, Integer, ForeignKey, UniqueConstraint, Text
+)
+from sqlalchemy.orm import relationship
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -26,35 +29,63 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 engine = create_async_engine(DATABASE_URL, echo=True)
 Base = declarative_base()
 
-class Header(Base):
-    __tablename__ = 'header'
-    key = Column(String, primary_key=True)
-    value = Column(String, primary_key=True)
-    __table_args__ = (UniqueConstraint('key', 'value', name='_key_value_uc'),)
+class Log(Base):
+    __tablename__ = 'logs'
+    log_id = Column(Integer, primary_key=True, autoincrement=True)
+    start_of_log = Column(String, nullable=True)
+    contest = Column(String, nullable=True)
+    callsign = Column(String, nullable=True)
+    location = Column(String, nullable=True)
+    category_operator = Column(String, nullable=True)
+    category_assisted = Column(String, nullable=True)
+    category_band = Column(String, nullable=True)
+    category_power = Column(String, nullable=True)
+    category_mode = Column(String, nullable=True)
+    category_transmitter = Column(String, nullable=True)
+    category_station = Column(String, nullable=True)
+    category_overlay = Column(String, nullable=True)
+    grid_locator = Column(String, nullable=True)
+    claimed_score = Column(String, nullable=True)
+    name = Column(String, nullable=True)
+    club = Column(String, nullable=True)
+    created_by = Column(String, nullable=True)
+    soapbox = Column(Text, nullable=True)  # Soapbox can have multiple lines/text
+
+    # Relationships
+    qsos = relationship('QSO', back_populates='log')
 
 class QSO(Base):
     __tablename__ = 'qso'
-    frequency = Column(String, primary_key=True)
-    mode = Column(String, primary_key=True)
-    date = Column(String, primary_key=True)
-    time = Column(String, primary_key=True)
-    my_call = Column(String, primary_key=True)
-    their_call = Column(String, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    log_id = Column(Integer, ForeignKey('logs.log_id'))
+    frequency = Column(String, nullable=True)
+    mode = Column(String, nullable=True)
+    date = Column(String, nullable=True)
+    time = Column(String, nullable=True)
+    my_call = Column(String, nullable=True)
+    their_call = Column(String, nullable=True)
     my_rst = Column(String, nullable=True)
     my_serial = Column(String, nullable=True)
     their_rst = Column(String, nullable=True)
     their_serial = Column(String, nullable=True)
-    extra_field = Column(String, nullable=True)  # New field
-    __table_args__ = (UniqueConstraint('frequency', 'mode', 'date', 'time', 'my_call', 'their_call', name='_qso_uc'),)
+    extra_field = Column(String, nullable=True)
+
+    # Relationships
+    log = relationship('Log', back_populates='qsos')
+
+    __table_args__ = (
+        UniqueConstraint('log_id', 'frequency', 'mode', 'date', 'time', 'my_call', 'their_call', name='_qso_uc'),
+    )
 
 async def init_db():
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)  # Drop existing tables
-        await conn.run_sync(Base.metadata.create_all)  # Create new tables
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+
+import re
 
 async def download_and_process_log(semaphore, http_session, year, call_sign):
     async with semaphore:
-        success = False
         for url_template, identifier in url_templates:
             url = url_template.format(year=year, call_sign=call_sign)
             try:
@@ -63,64 +94,73 @@ async def download_and_process_log(semaphore, http_session, year, call_sign):
                         text = await response.text()
                         async with AsyncSession(engine) as db_session:
                             log_data = text.splitlines()
-                            header_data = []
-                            qso_data = []
                             header_section = True
+
+                            # Create a new Log instance
+                            log = Log()
+
+                            soapbox_entries = []
 
                             for line in log_data:
                                 if line.startswith('QSO:'):
                                     header_section = False
+                                    continue  # Skip to QSOs
 
                                 if header_section:
+                                    # Handle headers
                                     if ': ' in line:
                                         key, value = line.split(': ', 1)
-                                        header_data.append(Header(key=key, value=value))
+                                        key_lower = key.lower().replace('-', '_')
+
+                                        # Assign value to the corresponding attribute if it exists
+                                        if hasattr(log, key_lower):
+                                            setattr(log, key_lower, value)
+                                        elif key_lower == 'soapbox':
+                                            soapbox_entries.append(value)
+                                    else:
+                                        # Handle SOAPBOX entries without ': '
+                                        if line.strip():
+                                            soapbox_entries.append(line.strip())
                                 else:
+                                    # Handle QSOs
                                     if line.startswith('QSO:'):
-                                        parts = line.split()
-                                        # Handle both 11 and 12 field QSO lines
-                                        if len(parts) == 12:
-                                            # QSO line with extra_field
-                                            _, frequency, mode, date, time, my_call, my_rst, my_serial, their_call, their_rst, their_serial, extra_field = parts
-                                        elif len(parts) == 11:
-                                            # QSO line without extra_field
-                                            _, frequency, mode, date, time, my_call, my_rst, their_call, their_rst, their_serial, extra_field = parts
-                                            # Assign None to extra_field or handle accordingly
-                                            extra_field = None
+                                        parts = re.split(r'\s+', line)
+                                        # Adjust the parsing based on the number of parts
+                                        if len(parts) >= 10:
+                                            qso = QSO(
+                                                log=log,
+                                                frequency=parts[1],
+                                                mode=parts[2],
+                                                date=parts[3],
+                                                time=parts[4],
+                                                my_call=parts[5],
+                                                my_rst=parts[6],
+                                                my_serial=parts[7],
+                                                their_call=parts[8],
+                                                their_rst=parts[9],
+                                                their_serial=parts[10],
+                                                extra_field=parts[11] if len(parts) > 11 else None
+                                            )
+                                            db_session.add(qso)
                                         else:
-                                            print(f"Line skipped due to unexpected number of fields ({len(parts)}): {line}")
-                                            continue  # Skip lines that don't match expected formats
+                                            print(f"Line skipped due to insufficient data: {line}")
 
-                                        qso = QSO(
-                                            frequency=frequency,
-                                            mode=mode,
-                                            date=date,
-                                            time=time,
-                                            my_call=my_call,
-                                            their_call=their_call,
-                                            my_rst=my_rst,
-                                            my_serial=my_serial if len(parts) >= 12 else None,
-                                            their_rst=their_rst,
-                                            their_serial=their_serial,
-                                            extra_field=extra_field
-                                        )
-                                        qso_data.append(qso)
+                            # Combine soapbox entries
+                            if soapbox_entries:
+                                log.soapbox = '\n'.join(soapbox_entries)
 
-                            if header_data:
-                                db_session.add_all(header_data)
-                            if qso_data:
-                                db_session.add_all(qso_data)
-                            
+                            # Assign default values if necessary
+                            log.callsign = log.callsign or call_sign.upper()
+                            log.contest = log.contest or identifier.upper()
+
+                            # Add the log to the session
+                            db_session.add(log)
                             await db_session.commit()
-                        print(f'Successfully downloaded and saved logs for {call_sign} from {url}')
-                        success = True
+                        print(f'Successfully processed logs for {call_sign} from {url}')
                     else:
                         print(f'Failed to download from {url} with status {response.status}')
             except Exception as e:
                 print(f'Error downloading from {url}: {e}')
-
-        if not success:
-            print(f'Failed to download any logs for {call_sign} in {year}')
 
 async def main():
     # Initialize the database
