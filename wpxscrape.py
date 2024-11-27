@@ -7,7 +7,7 @@ from sqlalchemy import Column, String, UniqueConstraint
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 
-#envs
+# Load environment variables from .env file
 load_dotenv()
 
 # Define the URL templates with identifiers
@@ -17,7 +17,7 @@ url_templates = [
     ("https://cqwpxrtty.com/publiclogs/{year}/{call_sign}.log", 'rtty')
 ]
 
-# Read the call signs from list.txt
+# Read the call signs from callsigns.txt
 with open('callsigns.txt', 'r') as file:
     call_signs = [line.strip().lower() for line in file]
 
@@ -41,18 +41,22 @@ class QSO(Base):
     my_call = Column(String, primary_key=True)
     their_call = Column(String, primary_key=True)
     my_rst = Column(String)
-    my_serial = Column(String)
+    my_zone = Column(String)
     their_rst = Column(String)
-    their_serial = Column(String)
+    their_zone = Column(String)
     __table_args__ = (UniqueConstraint('frequency', 'mode', 'date', 'time', 'my_call', 'their_call', name='_qso_uc'),)
 
-async def download_and_process_log(semaphore, session, year, call_sign):
+async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+async def download_and_process_log(semaphore, http_session, year, call_sign):
     async with semaphore:
-        success = False  # Flag to check if at least one log was downloaded
+        success = False
         for url_template, identifier in url_templates:
             url = url_template.format(year=year, call_sign=call_sign)
             try:
-                async with session.get(url) as response:
+                async with http_session.get(url) as response:
                     if response.status == 200:
                         text = await response.text()
                         async with AsyncSession(engine) as db_session:
@@ -74,38 +78,41 @@ async def download_and_process_log(semaphore, session, year, call_sign):
                                         parts = line.split()
                                         if len(parts) >= 11:
                                             qso_data.append(QSO(
-                                                frequency=parts[1],  # frequency
-                                                mode=parts[2],  # mode
-                                                date=parts[3],  # date
-                                                time=parts[4],  # time
-                                                my_call=parts[5],  # my_call
-                                                my_rst=parts[6],  # my_rst
-                                                my_serial=parts[7],  # my_serial
-                                                their_call=parts[8],  # their_call
-                                                their_rst=parts[9],  # their_rst
-                                                their_serial=parts[10]  # their_serial
+                                                frequency=parts[1],
+                                                mode=parts[2],
+                                                date=parts[3],
+                                                time=parts[4],
+                                                my_call=parts[5],
+                                                my_rst=parts[6],
+                                                my_zone=parts[7],
+                                                their_call=parts[8],
+                                                their_rst=parts[9],
+                                                their_zone=parts[10]
                                             ))
 
                             db_session.add_all(header_data)
                             db_session.add_all(qso_data)
                             await db_session.commit()
                         print(f'Successfully downloaded and saved logs for {call_sign} from {url}')
-                        success = True  # Set the flag to True after a successful download
+                        success = True
                     else:
-                        print(f'Failed to download from {url}')
+                        print(f'Failed to download from {url} with status {response.status}')
             except Exception as e:
-                print(f'Error downloading from {url}: {e}')
+                print(f'Error downloading from {url}: {e}")
 
         if not success:
             print(f'Failed to download any logs for {call_sign} in {year}')
 
 async def main():
+    # Initialize the database
+    await init_db()
+
     semaphore = asyncio.Semaphore(5)  # Limit to 5 concurrent tasks
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession() as http_session:
         tasks = []
         for year in range(2005, 2023 + 1):
             for call_sign in call_signs:
-                tasks.append(download_and_process_log(semaphore, session, year, call_sign))
+                tasks.append(download_and_process_log(semaphore, http_session, year, call_sign))
         await asyncio.gather(*tasks)
 
 # Run the main function
