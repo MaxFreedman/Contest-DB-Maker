@@ -40,11 +40,11 @@ class QSO(Base):
     time = Column(String, primary_key=True)
     my_call = Column(String, primary_key=True)
     their_call = Column(String, primary_key=True)
-    my_rst = Column(String)
-    my_serial = Column(String)
-    their_rst = Column(String)
-    their_serial = Column(String)
-    extra_field = Column(String)  # New field
+    my_rst = Column(String, nullable=True)
+    my_serial = Column(String, nullable=True)
+    their_rst = Column(String, nullable=True)
+    their_serial = Column(String, nullable=True)
+    extra_field = Column(String, nullable=True)  # New field
     __table_args__ = (UniqueConstraint('frequency', 'mode', 'date', 'time', 'my_call', 'their_call', name='_qso_uc'),)
 
 async def init_db():
@@ -78,26 +78,39 @@ async def download_and_process_log(semaphore, http_session, year, call_sign):
                                 else:
                                     if line.startswith('QSO:'):
                                         parts = line.split()
-                                        # Adjusted to check for at least 12 parts
-                                        if len(parts) >= 12:
-                                            qso_data.append(QSO(
-                                                frequency=parts[1],   # frequency
-                                                mode=parts[2],        # mode
-                                                date=parts[3],        # date
-                                                time=parts[4],        # time
-                                                my_call=parts[5],     # my_call
-                                                my_rst=parts[6],      # my_rst
-                                                my_serial=parts[7],     # my_serial
-                                                their_call=parts[8],  # their_call
-                                                their_rst=parts[9],   # their_rst
-                                                their_serial=parts[10], # their_serial
-                                                extra_field=parts[11] # New field
-                                            ))
+                                        # Handle both 11 and 12 field QSO lines
+                                        if len(parts) == 12:
+                                            # QSO line with extra_field
+                                            _, frequency, mode, date, time, my_call, my_rst, my_serial, their_call, their_rst, their_serial, extra_field = parts
+                                        elif len(parts) == 11:
+                                            # QSO line without extra_field
+                                            _, frequency, mode, date, time, my_call, my_rst, their_call, their_rst, their_serial, extra_field = parts
+                                            # Assign None to extra_field or handle accordingly
+                                            extra_field = None
                                         else:
-                                            print(f"Line skipped due to insufficient data: {line}")
+                                            print(f"Line skipped due to unexpected number of fields ({len(parts)}): {line}")
+                                            continue  # Skip lines that don't match expected formats
 
-                            db_session.add_all(header_data)
-                            db_session.add_all(qso_data)
+                                        qso = QSO(
+                                            frequency=frequency,
+                                            mode=mode,
+                                            date=date,
+                                            time=time,
+                                            my_call=my_call,
+                                            their_call=their_call,
+                                            my_rst=my_rst,
+                                            my_serial=my_serial if len(parts) >= 12 else None,
+                                            their_rst=their_rst,
+                                            their_serial=their_serial,
+                                            extra_field=extra_field
+                                        )
+                                        qso_data.append(qso)
+
+                            if header_data:
+                                db_session.add_all(header_data)
+                            if qso_data:
+                                db_session.add_all(qso_data)
+                            
                             await db_session.commit()
                         print(f'Successfully downloaded and saved logs for {call_sign} from {url}')
                         success = True
