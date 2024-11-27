@@ -44,11 +44,13 @@ class QSO(Base):
     my_zone = Column(String)
     their_rst = Column(String)
     their_zone = Column(String)
+    extra_field = Column(String)  # New field
     __table_args__ = (UniqueConstraint('frequency', 'mode', 'date', 'time', 'my_call', 'their_call', name='_qso_uc'),)
 
 async def init_db():
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(Base.metadata.drop_all)  # Drop existing tables
+        await conn.run_sync(Base.metadata.create_all)  # Create new tables
 
 async def download_and_process_log(semaphore, http_session, year, call_sign):
     async with semaphore:
@@ -76,19 +78,23 @@ async def download_and_process_log(semaphore, http_session, year, call_sign):
                                 else:
                                     if line.startswith('QSO:'):
                                         parts = line.split()
-                                        if len(parts) >= 11:
+                                        # Adjusted to check for at least 12 parts
+                                        if len(parts) >= 12:
                                             qso_data.append(QSO(
-                                                frequency=parts[1],
-                                                mode=parts[2],
-                                                date=parts[3],
-                                                time=parts[4],
-                                                my_call=parts[5],
-                                                my_rst=parts[6],
-                                                my_zone=parts[7],
-                                                their_call=parts[8],
-                                                their_rst=parts[9],
-                                                their_zone=parts[10]
+                                                frequency=parts[1],   # frequency
+                                                mode=parts[2],        # mode
+                                                date=parts[3],        # date
+                                                time=parts[4],        # time
+                                                my_call=parts[5],     # my_call
+                                                my_rst=parts[6],      # my_rst
+                                                my_zone=parts[7],     # my_zone
+                                                their_call=parts[8],  # their_call
+                                                their_rst=parts[9],   # their_rst
+                                                their_zone=parts[10], # their_zone
+                                                extra_field=parts[11] # New field
                                             ))
+                                        else:
+                                            print(f"Line skipped due to insufficient data: {line}")
 
                             db_session.add_all(header_data)
                             db_session.add_all(qso_data)
@@ -98,7 +104,7 @@ async def download_and_process_log(semaphore, http_session, year, call_sign):
                     else:
                         print(f'Failed to download from {url} with status {response.status}')
             except Exception as e:
-                print(f'Error downloading from {url}: {e}")
+                print(f'Error downloading from {url}: {e}')
 
         if not success:
             print(f'Failed to download any logs for {call_sign} in {year}')
