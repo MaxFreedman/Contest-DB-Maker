@@ -41,9 +41,9 @@ class QSO(Base):
     my_call = Column(String, primary_key=True)
     their_call = Column(String, primary_key=True)
     my_rst = Column(String)
-    my_zone = Column(String)
+    my_serial = Column(String)
     their_rst = Column(String)
-    their_zone = Column(String)
+    their_serial = Column(String)
     extra_field = Column(String)  # New field
     __table_args__ = (UniqueConstraint('frequency', 'mode', 'date', 'time', 'my_call', 'their_call', name='_qso_uc'),)
 
@@ -87,10 +87,10 @@ async def download_and_process_log(semaphore, http_session, year, call_sign):
                                                 time=parts[4],        # time
                                                 my_call=parts[5],     # my_call
                                                 my_rst=parts[6],      # my_rst
-                                                my_zone=parts[7],     # my_zone
+                                                my_serial=parts[7],     # my_serial
                                                 their_call=parts[8],  # their_call
                                                 their_rst=parts[9],   # their_rst
-                                                their_zone=parts[10], # their_zone
+                                                their_serial=parts[10], # their_serial
                                                 extra_field=parts[11] # New field
                                             ))
                                         else:
@@ -113,10 +113,10 @@ async def main():
     # Initialize the database
     await init_db()
 
-    semaphore = asyncio.Semaphore(5)  # Limit to 5 concurrent tasks
+    semaphore = asyncio.Semaphore(10)  # Limit to x concurrent tasks
     async with aiohttp.ClientSession() as http_session:
         tasks = []
-        for year in range(2005, 2023 + 1):
+        for year in range(2008, 2023 + 1):
             for call_sign in call_signs:
                 tasks.append(download_and_process_log(semaphore, http_session, year, call_sign))
         await asyncio.gather(*tasks)
