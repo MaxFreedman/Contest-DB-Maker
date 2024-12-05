@@ -82,8 +82,6 @@ async def init_db():
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
-import re
-
 async def download_and_process_log(semaphore, http_session, year, call_sign):
     async with semaphore:
         for url_template, identifier in url_templates:
@@ -104,9 +102,28 @@ async def download_and_process_log(semaphore, http_session, year, call_sign):
                             for line in log_data:
                                 if line.startswith('QSO:'):
                                     header_section = False
-                                    continue  # Skip to QSOs
-
-                                if header_section:
+                                    # Process the QSO line
+                                    parts = re.split(r'\s+', line)
+                                    # Adjust the parsing based on the number of parts
+                                    if len(parts) >= 10:
+                                        qso = QSO(
+                                            log=log,
+                                            frequency=parts[1],
+                                            mode=parts[2],
+                                            date=parts[3],
+                                            time=parts[4],
+                                            my_call=parts[5],
+                                            my_rst=parts[6],
+                                            my_serial=parts[7],
+                                            their_call=parts[8],
+                                            their_rst=parts[9],
+                                            their_serial=parts[10],
+                                            extra_field=parts[11] if len(parts) > 11 else None
+                                        )
+                                        db_session.add(qso)
+                                    else:
+                                        print(f"Line skipped due to insufficient data: {line}")
+                                elif header_section:
                                     # Handle headers
                                     if ': ' in line:
                                         key, value = line.split(': ', 1)
@@ -122,28 +139,8 @@ async def download_and_process_log(semaphore, http_session, year, call_sign):
                                         if line.strip():
                                             soapbox_entries.append(line.strip())
                                 else:
-                                    # Handle QSOs
-                                    if line.startswith('QSO:'):
-                                        parts = re.split(r'\s+', line)
-                                        # Adjust the parsing based on the number of parts
-                                        if len(parts) >= 10:
-                                            qso = QSO(
-                                                log=log,
-                                                frequency=parts[1],
-                                                mode=parts[2],
-                                                date=parts[3],
-                                                time=parts[4],
-                                                my_call=parts[5],
-                                                my_rst=parts[6],
-                                                my_serial=parts[7],
-                                                their_call=parts[8],
-                                                their_rst=parts[9],
-                                                their_serial=parts[10],
-                                                extra_field=parts[11] if len(parts) > 11 else None
-                                            )
-                                            db_session.add(qso)
-                                        else:
-                                            print(f"Line skipped due to insufficient data: {line}")
+                                    # Optionally handle any other lines after headers
+                                    pass
 
                             # Combine soapbox entries
                             if soapbox_entries:
